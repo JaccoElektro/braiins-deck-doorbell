@@ -14,9 +14,12 @@ no computer or home server needed.
   rotation.
 - **A notification on your phone, with a photo**, if you want one — through
   [ntfy](https://ntfy.sh), straight from the Deck.
+- **Optionally, open the door from the Deck.** Switch it on and a round green button with an open
+  padlock appears on the doorbell screen; two taps open the door through the doorbell's own lock
+  relay. Off unless you turn it on.
 - **English or Dutch.**
-- **Read-only towards the doorbell.** It listens and looks; it never opens the door or changes a
-  setting on the doorbell.
+- **Otherwise read-only towards the doorbell.** It listens and looks; it never changes a setting
+  on the doorbell.
 
 ## What you need
 
@@ -86,9 +89,35 @@ ssh root@<deck-ip> 'uci set doorbell.main.volume=60; uci commit doorbell'
 | `name`       | `front door`    | Name of the door, shown under "Someone's at the door"                        |
 | `ntfy_url`   | —               | An [ntfy](https://ntfy.sh) topic URL, e.g. `https://ntfy.sh/<your-topic>`: a notification with a photo of the door |
 | `ping_url`   | —               | A URL of your own to call on every ring (`?name=…&at=…&lang=…`), e.g. a Home Assistant webhook |
+| `unlock`     | `0`             | `1` shows the button that opens the door (see *Opening the door*)            |
+| `door`       | `1`             | Which of the doorbell's lock relays the button opens                         |
 | `debug`      | `0`             | `1` logs every event the doorbell sends (`logread -e doorbell`)              |
 
 Pick a long, random ntfy topic name: anyone who knows it can read the notifications.
+
+## Opening the door
+
+With `unlock` set to `1`, the doorbell screen gets a round green button with an open padlock in the
+bottom right corner ("Unlock" / "Ontgrendelen"). Tap it once and it asks you to tap again; a second
+tap within four seconds opens the door, through the same lock relay the doorbell's own app uses
+(`accessControl.cgi?action=openDoor`). How long the lock stays open is set in the doorbell itself.
+
+```bash
+ssh root@<deck-ip> 'uci set doorbell.main.unlock=1; uci commit doorbell'
+```
+
+Because this opens your front door, it is guarded:
+
+- **Off by default**, and switching it off takes the button away and makes the service refuse.
+- **Only from the Deck itself.** The button calls a script on the Deck's own web server, which
+  listens on `127.0.0.1` only and accepts POST only; nothing on your network can reach it.
+- **Two taps**, so a passing swipe can't open the door.
+- **At most once every 10 seconds.**
+- **Every opening is logged** (`logread -e doorbell`) and sent to `ntfy_url` and `ping_url` like a
+  ring, as "Door unlocked from the Deck".
+
+Anyone who can touch your Deck can open the door while the button is on. Keep it off if the Deck
+stands somewhere others can reach it.
 
 ## How it works
 
@@ -150,6 +179,7 @@ Then delete the doorbell scene in the Deck's web interface.
 | `/etc/doorbell/`                       | Doorbell login and Deck password (root only)                |
 | `/usr/share/doorbell/`                 | The chime and the scene finder                              |
 | `/www/cgi-bin/doorbell-status`, `/www/cgi-bin/doorbell-jpg` | Status and picture for the widget, on the Deck only |
+| `/www/cgi-bin/doorbell-unlock`         | Opens the door for the widget's button (POST, on the Deck only, refused unless `unlock` is on) |
 | curl, libcurl4, libnghttp2-14          | From OpenWrt 22.03.4, installed with `opkg`                 |
 | `widget-doorbell` package              | The widget, added with the Deck's own package manager (`bmc-nix-cli`) |
 

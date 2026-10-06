@@ -5,11 +5,17 @@
 #   doorbell ring     act as if someone rang (to test)
 #   doorbell chime    just the chime
 #   doorbell status   last ring, whether the listener is alive, LED and language (JSON)
+#   doorbell unlock   open the door (only with `unlock` switched on; see below)
 #
 # When someone rings: the chime from the Deck's own speaker (madplay), the
 # doorbell scene on screen (PreviewScene), and optionally a phone notification
-# with a photo (ntfy) or a ping to a URL of your own. Read-only towards the
-# VTO: it never opens the door or changes a setting.
+# with a photo (ntfy) or a ping to a URL of your own.
+#
+# Towards the VTO it only listens and looks — unless you switch `unlock` on:
+# then the widget shows a button that opens the door (the VTO's own lock
+# relay), after a second tap to confirm. Opening is only possible from the
+# Deck itself (its local web server), at most once per 10 seconds, and every
+# opening is logged and notified like a ring.
 #
 # Settings: uci doorbell.main.* — see README. Secrets: /etc/doorbell/vto.conf
 # and /etc/doorbell/deck-password (both chmod 600).
@@ -155,6 +161,44 @@ notify() { # $1 name, $2 unix time
 		"$ping?name=$(echo "$1" | sed 's/ /%20/g')&at=$2&lang=$(cfg lang en)"
 }
 
+# ── Opening the door (off unless switched on) ────────────────────────────
+
+unlock() {
+	if [ "$(cfg unlock 0)" != 1 ]; then
+		log "unlock refused: switched off"
+		echo '{"ok":false,"error":"off"}'; return
+	fi
+	now=$(date +%s)
+	last=$(cat "$STATE/unlocked" 2>/dev/null || echo 0)
+	if [ $((now - last)) -lt 10 ]; then
+		echo '{"ok":false,"error":"wait"}'; return
+	fi
+	echo "$now" > "$STATE/unlocked"
+	. /etc/doorbell/vto.conf
+	vto_auth
+	code=$(curl -sk --digest -K "$STATE/auth" --max-time 8 -o "$STATE/u.out" -w '%{http_code}' \
+		"${VTO_SCHEME:-https}://$VTO_HOST/cgi-bin/accessControl.cgi?action=openDoor&channel=$(cfg door 1)&UserID=101&Type=Remote")
+	if [ "$code" = 200 ] && grep -q OK "$STATE/u.out"; then
+		log "door unlocked from the Deck"
+		echo '{"ok":true}'
+		notify_unlock "$now" &
+	else
+		log "unlock failed (HTTP $code)"
+		echo '{"ok":false,"error":"vto"}'
+	fi
+	rm -f "$STATE/u.out"
+}
+
+notify_unlock() { # $1 unix time
+	text="Door unlocked from the Deck"; nl && text="Deur geopend vanaf de Deck"
+	url=$(cfg ntfy_url)
+	[ -n "$url" ] && curl -s --max-time 20 -o /dev/null -H "Title: $text" -H "Tags: unlock" \
+		-d "$(bellname), $(date +%H:%M)" "$url"
+	ping=$(cfg ping_url)
+	[ -n "$ping" ] && curl -s --max-time 4 -o /dev/null \
+		"$ping?event=unlock&name=$(bellname | sed 's/ /%20/g')&at=$1&lang=$(cfg lang en)"
+}
+
 # ── A ring ───────────────────────────────────────────────────────────────
 
 bellname() {
@@ -182,7 +226,8 @@ status() {
 	age=$(($(date +%s) - alive))
 	ok=false; [ "$age" -lt 200 ] && ok=true
 	led=true; [ "$(cfg led 1)" = 0 ] && led=false
-	extra=",\"events\":{\"ok\":$ok,\"age_s\":$age},\"led\":{\"on\":$led,\"color\":\"$(cfg led_color FFC800)\"},\"lang\":\"$(cfg lang en)\""
+	un=false; [ "$(cfg unlock 0)" = 1 ] && un=true
+	extra=",\"events\":{\"ok\":$ok,\"age_s\":$age},\"led\":{\"on\":$led,\"color\":\"$(cfg led_color FFC800)\"},\"lang\":\"$(cfg lang en)\",\"unlock\":$un"
 	echo "$ring" | sed -E "s/\}\s*$/$extra}/"
 }
 
@@ -226,6 +271,7 @@ run) run ;;
 ring) rm -f "$STATE/last"; ring ;;
 chime) chime ;;
 auth) vto_auth ;;
+unlock) unlock ;;
 status) status ;;
-*) echo "usage: doorbell run|ring|chime|status" >&2; exit 1 ;;
+*) echo "usage: doorbell run|ring|chime|status|unlock" >&2; exit 1 ;;
 esac

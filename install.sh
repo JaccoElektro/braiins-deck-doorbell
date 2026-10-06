@@ -42,8 +42,9 @@ scp -q < /dev/null "$HERE/deck/doorbell" "$DECK:/usr/sbin/doorbell"
 scp -q < /dev/null "$HERE/deck/doorbell.init" "$DECK:/etc/init.d/doorbell"
 scp -q < /dev/null "$HERE/deck/doorbell-status.cgi" "$DECK:/www/cgi-bin/doorbell-status"
 scp -q < /dev/null "$HERE/deck/doorbell-jpg.cgi" "$DECK:/www/cgi-bin/doorbell-jpg"
+scp -q < /dev/null "$HERE/deck/doorbell-unlock.cgi" "$DECK:/www/cgi-bin/doorbell-unlock"
 scp -q < /dev/null "$HERE/deck/scene.lua" "$HERE/deck/ding_dong.mp3" "$DECK:/usr/share/doorbell/"
-"${SSH[@]}" 'chmod 755 /usr/sbin/doorbell /etc/init.d/doorbell /www/cgi-bin/doorbell-status /www/cgi-bin/doorbell-jpg'
+"${SSH[@]}" 'chmod 755 /usr/sbin/doorbell /etc/init.d/doorbell /www/cgi-bin/doorbell-status /www/cgi-bin/doorbell-jpg /www/cgi-bin/doorbell-unlock'
 "${SSHIN[@]}" '[ -f /etc/config/doorbell ] || cat > /etc/config/doorbell' < "$HERE/deck/doorbell.uci"
 
 ask_vto=1

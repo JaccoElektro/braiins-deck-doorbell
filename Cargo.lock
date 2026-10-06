@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "doorbell"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bmc-wasm-sdk",
  "remote-image",

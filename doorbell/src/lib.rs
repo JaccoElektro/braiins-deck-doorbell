@@ -87,6 +87,9 @@ mod wasm_glue {
         /// strip or not, in which colour, and the overlay's language.
         static RING_LED: Cell<Option<Color>> = const { Cell::new(Some(BELL_YELLOW)) };
         static RING_EN: Cell<bool> = const { Cell::new(false) };
+        /// The service allows opening the door (its `unlock` switch).
+        static UNLOCK_ON: Cell<bool> = const { Cell::new(false) };
+        static LOCK: Cell<Lock> = const { Cell::new(Lock::Idle) };
     }
 
     fn ring_url() -> Option<String> {
@@ -107,6 +110,7 @@ mod wasm_glue {
         RING_TIME.with(|t| *t.borrow_mut() = j.str("/last_ring/time").unwrap_or_default());
         RING_NAME.with(|t| *t.borrow_mut() = j.str("/last_ring/name").unwrap_or_default());
         RING_EN.set(j.str("/lang").as_deref() == Some("en"));
+        UNLOCK_ON.set(j.bool("/unlock").unwrap_or(false));
         let led_on = j.bool("/led/on").unwrap_or(true);
         let color = j.str("/led/color").and_then(|c| parse_hex(&c)).map_or(BELL_YELLOW, |(r, g, b)| Color::from_rgb(r, g, b));
         RING_LED.set(led_on.then_some(color));
@@ -129,6 +133,148 @@ mod wasm_glue {
         let v = u32::from_str_radix(s, 16).ok()?;
         #[expect(clippy::cast_possible_truncation, reason = "masked to one byte each")]
         Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+    }
+
+    // ── Opening the door ─────────────────────────────────────────────────
+    // Only when the service's `unlock` switch is on. Two taps: the first arms
+    // the button for a few seconds, the second opens — a passing swipe or a
+    // curious cat should never open the front door.
+
+    const KEY_UNLOCK: &str = "unlock";
+    const UNLOCK_ARM_S: i64 = 4;
+    const UNLOCK_SHOW_S: i64 = 5;
+    const GREEN: Color = Color::from_hex(0x30_D1_58);
+    const RED: Color = Color::from_hex(0xFF_45_3A);
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Lock {
+        Idle,
+        Armed(i64),
+        Busy,
+        Done(i64),
+        Failed(i64),
+    }
+
+    /// The button's state now: an arming or a result that has run its time is idle again.
+    fn lock_now(now: i64) -> Lock {
+        match LOCK.get() {
+            Lock::Armed(t) if now - t >= UNLOCK_ARM_S => Lock::Idle,
+            Lock::Done(t) | Lock::Failed(t) if now - t >= UNLOCK_SHOW_S => Lock::Idle,
+            l => l,
+        }
+    }
+
+    /// The service's unlock CGI, next to its status CGI.
+    fn unlock_url() -> Option<String> {
+        ring_url().and_then(|u| u.rfind('/').map(|i| fmt!("{}/doorbell-unlock", &u[..i])))
+    }
+
+    fn on_unlock(r: &FetchResponse) {
+        let ok = r.ok() && r.json().bool("/ok").unwrap_or(false);
+        let now = SystemTime::now().unix_secs;
+        LOCK.set(if ok { Lock::Done(now) } else { Lock::Failed(now) });
+        request_frame();
+    }
+
+    fn unlock_tapped() {
+        let now = SystemTime::now().unix_secs;
+        match lock_now(now) {
+            Lock::Armed(_) => {
+                if let Some(url) = unlock_url() {
+                    LOCK.set(Lock::Busy);
+                    let _ = FetchRequest::post(&url).timeout(core::time::Duration::from_secs(12)).send(on_unlock);
+                }
+            }
+            Lock::Busy => {}
+            _ => LOCK.set(Lock::Armed(now)),
+        }
+        request_frame();
+    }
+
+    /// An open padlock in an `s`-sized box at (`ox`, `oy`).
+    fn padlock(s: f32, ox: f32, oy: f32, color: Color) -> Vec<Draw> {
+        let p = |x: f32, y: f32| (ox + s * x, oy + s * y);
+        let mut shackle = vec![p(0.65, 0.47)];
+        // Over the top from right to left; the left leg stops short of the body — open.
+        shackle.extend((0..=12).map(|i| {
+            #[expect(clippy::cast_precision_loss, reason = "twelve steps")]
+            let a = core::f32::consts::PI * (i as f32 / 12.0);
+            p(0.50 + 0.15 * a.cos(), 0.30 - 0.15 * a.sin())
+        }));
+        shackle.push(p(0.35, 0.36));
+        let ink = Color::from_rgba(0, 0, 0, 0x70);
+        vec![
+            Draw::path(shackle, s * 0.075, color, false, Interpolation::Linear),
+            Draw::fill_path(round_rect(ox + s * 0.24, oy + s * 0.45, s * 0.52, s * 0.38, s * 0.07), color, true),
+            Draw::circle(ox + s * 0.50, oy + s * 0.60, s * 0.045, ink),
+            Draw::rect(ox + s * 0.485, oy + s * 0.62, s * 0.03, s * 0.10, ink),
+        ]
+    }
+
+    fn round_rect(left: f32, top: f32, width: f32, height: f32, radius: f32) -> Vec<(f32, f32)> {
+        let corners = [
+            (left + width - radius, top + radius, -90.0_f32),
+            (left + width - radius, top + height - radius, 0.0),
+            (left + radius, top + height - radius, 90.0),
+            (left + radius, top + radius, 180.0),
+        ];
+        let mut pts = Vec::with_capacity(28);
+        for (cx, cy, start) in corners {
+            for step in 0..7u8 {
+                let angle = (start + f32::from(step) * 15.0).to_radians();
+                pts.push((cx + radius * angle.cos(), cy + radius * angle.sin()));
+            }
+        }
+        pts
+    }
+
+    /// The round green button, bottom right, with its label underneath.
+    fn unlock_button(base: Node, height: f32) -> Node {
+        let now = SystemTime::now().unix_secs;
+        let en = RING_EN.get();
+        let state = lock_now(now);
+        let disc_d = if height >= 300.0 { 76.0 } else { 52.0 };
+        let (fill, label) = match state {
+            Lock::Idle => (GREEN, if en { "Unlock" } else { "Ontgrendelen" }),
+            Lock::Armed(_) => (GREEN, if en { "Tap again" } else { "Nogmaals tikken" }),
+            Lock::Busy => (GREEN, if en { "Opening…" } else { "Openen…" }),
+            Lock::Done(_) => (GREEN, if en { "Unlocked" } else { "Geopend" }),
+            Lock::Failed(_) => (RED, if en { "Failed" } else { "Mislukt" }),
+        };
+        let margin = 6.0; // room around the disc for the shadow and the "armed" ring
+        let center = margin + disc_d / 2.0;
+        let mut draws = vec![Draw::circle(center, center + 2.0, disc_d / 2.0, Color::from_rgba(0, 0, 0, 0x60))];
+        let disc = Draw::circle(center, center, disc_d / 2.0, fill.with_alpha(if state == Lock::Idle { 0.85 } else { 1.0 }));
+        draws.push(if matches!(state, Lock::Armed(_)) {
+            // A pulse while it waits for the second tap.
+            disc.animate(AnimProperty::Alpha, 1.0, 0.55, 420, Easing::EaseInOut, LoopMode::PingPong)
+        } else {
+            disc
+        });
+        if matches!(state, Lock::Armed(_)) {
+            draws.push(Draw::arc(center, center, disc_d / 2.0 + 4.0, 0.0, core::f32::consts::TAU, 3.0, ArcFill::Solid(WHITE), ArcSegments::Continuous, ArcCap::Round));
+        }
+        let glyph = disc_d * 0.62;
+        draws.extend(padlock(glyph, center - glyph / 2.0, center - glyph / 2.0, WHITE));
+        let small = height < 300.0;
+        let button = col(
+            props!(inset_right: 22.0, inset_bottom: 18.0, gap: 6.0, cross_align: CrossAlign::Center),
+            [
+                touchable(KEY_UNLOCK, props!(width: disc_d + 2.0 * margin, height: disc_d + 2.0 * margin), draws),
+                row(
+                    props!(padding: 5.0, background: Color::from_rgba(0x0E, 0x0C, 0x0A, 0xB0), border_radius: 10.0),
+                    [text(label, style!(size: if small { 11 } else { 14 }, weight: FontWeight::SEMIBOLD, color: WHITE))],
+                ),
+            ],
+        );
+        let mut base = base;
+        if let Node::Column(_, children) | Node::Row(_, children) = &mut base {
+            children.push(button);
+        }
+        if state != Lock::Idle {
+            request_frame_after(1_000);
+        }
+        base
     }
 
     fn ringing() -> bool {
@@ -460,6 +606,9 @@ mod wasm_glue {
             request_frame_after(5_000);
         }
 
+        #[expect(clippy::cast_precision_loss, reason = "viewport sizes are small integers")]
+        let base = if UNLOCK_ON.get() && unlock_url().is_some() { unlock_button(base, size.height as f32) } else { base };
+
         let open = menu_open();
         let result = render_ui(
             size.width,
@@ -468,6 +617,10 @@ mod wasm_glue {
             // the reload menu stays reachable only if it was already open.
             if open { render::with_interaction(base, open) } else { base },
         );
+
+        if result.clicks.contains_key(KEY_UNLOCK) && UNLOCK_ON.get() {
+            unlock_tapped();
+        }
 
         // Route taps: a button when the menu is open, otherwise open/dismiss it.
         let changed = if open {

@@ -1,7 +1,7 @@
 {
   "$schema": "../bmc-sdk/bmc-widget-manifest/manifest.schema.json",
   "uid": "429a5e14-18f1-4564-8e9f-d196db251903",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Doorbell",
   "subname": "Who's at the door",
   "description": "Live picture from a Dahua video doorbell (VTO). When someone rings: a chime from the Deck's speaker, the light strip blinks and this screen comes up — no computer needed",
