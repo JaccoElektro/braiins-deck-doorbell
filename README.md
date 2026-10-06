@@ -4,7 +4,7 @@ Turn your Braiins Deck into the indoor screen of a Dahua video doorbell. When so
 Deck chimes, its light strip blinks and the picture from the door comes up — all on the Deck itself,
 no computer or home server needed.
 
-![The Doorbell widget after a ring: the picture from the door with a gold frame and "Someone's at the door · 19:42 · front door"](docs/doorbell.png)
+![The Doorbell widget after a ring: the picture from the door in a gold frame, "Er wordt aangebeld · 21:47 · voordeur" (Dutch for "Someone's at the door"), and the green unlock button bottom right](docs/doorbell.png)
 
 - **A chime from the Deck's own speaker**, twice by default, at a volume you choose. At night
   (the Deck's own night-mode hours) it can be softer, normal, or silent.
