@@ -1,0 +1,21 @@
+[package]
+name = "doorbell"
+version = "1.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+# The manifest icon ships from the crate tree.
+[package.metadata.nix]
+include = ["assets/**"]
+
+[lib]
+name = "doorbell"
+crate-type = ["cdylib"]
+
+[dependencies]
+bmc-wasm-sdk = { path = "../bmc-sdk/bmc-wasm-runtime/sdk" }
+remote-image = { path = "../bmc-sdk/widgets-wasm/lib/remote-image" }
+
+[lints]
+workspace = true

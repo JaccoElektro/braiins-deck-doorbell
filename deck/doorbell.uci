@@ -1,0 +1,8 @@
+config doorbell 'main'
+	option volume '70'
+	option night 'soft'
+	option repeats '2'
+	option interval '15'
+	option led '1'
+	option led_color 'FFC800'
+	option lang 'en'

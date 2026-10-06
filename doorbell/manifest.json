@@ -1,0 +1,61 @@
+{
+  "$schema": "../bmc-sdk/bmc-widget-manifest/manifest.schema.json",
+  "uid": "429a5e14-18f1-4564-8e9f-d196db251903",
+  "version": "1.0.0",
+  "name": "Doorbell",
+  "subname": "Who's at the door",
+  "description": "Live picture from a Dahua video doorbell (VTO). When someone rings: a chime from the Deck's speaker, the light strip blinks and this screen comes up — no computer needed",
+  "config_help": "Needs the doorbell service on the Deck (see the README). Add this widget to a scene and switch that scene off: it then only appears when someone rings.",
+  "author": {
+    "name": "Jacco",
+    "url": "https://github.com/JaccoElektro/braiins-deck-doorbell"
+  },
+  "binary": "bin/doorbell",
+  "icon": "assets/icon.svg",
+  "category": "utility",
+  "settings": [
+    "localization",
+    "timezone",
+    "nightMode"
+  ],
+  "supported_viewports": [
+    {
+      "type": "rectangular"
+    }
+  ],
+  "params": {
+    "url": {
+      "name": "Picture URL",
+      "description": "Where the doorbell picture comes from; the default is the doorbell service on this Deck",
+      "type": "string",
+      "default_value": "http://127.0.0.1:8000/cgi-bin/doorbell-jpg"
+    },
+    "refresh_seconds": {
+      "name": "Refresh every (seconds)",
+      "type": "integer",
+      "min": 2,
+      "default_value": 2
+    },
+    "sizing": {
+      "name": "Sizing",
+      "type": "string",
+      "default_value": "cover",
+      "enum_values": [
+        {
+          "value": "contain",
+          "label": "Fit — whole picture"
+        },
+        {
+          "value": "cover",
+          "label": "Fill — crop to edges"
+        }
+      ]
+    },
+    "ring_url": {
+      "name": "Status URL",
+      "description": "The doorbell service's status; the default is the one on this Deck",
+      "type": "string",
+      "default_value": "http://127.0.0.1:8000/cgi-bin/doorbell-status"
+    }
+  }
+}

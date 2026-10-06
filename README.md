@@ -1,0 +1,176 @@
+# Doorbell for the Braiins Deck
+
+Turn your Braiins Deck into the indoor screen of a Dahua video doorbell. When someone rings, the
+Deck chimes, its light strip blinks and the picture from the door comes up — all on the Deck itself,
+no computer or home server needed.
+
+![The Doorbell widget after a ring: the picture from the door with a gold frame and "Someone's at the door · 19:42 · front door"](docs/doorbell.png)
+
+- **A chime from the Deck's own speaker**, twice by default, at a volume you choose. At night
+  (the Deck's own night-mode hours) it can be softer, normal, or silent.
+- **The light strip blinks** in yellow, or orange, warm white, blue — or not at all.
+- **The doorbell screen comes up by itself** for two minutes: a live picture refreshed every two
+  seconds, a gold frame and who rang when. The rest of the time the screen stays out of your
+  rotation.
+- **A notification on your phone, with a photo**, if you want one — through
+  [ntfy](https://ntfy.sh), straight from the Deck.
+- **English or Dutch.**
+- **Read-only towards the doorbell.** It listens and looks; it never opens the door or changes a
+  setting on the doorbell.
+
+## What you need
+
+- A Braiins Deck whose firmware runs **widget SDK 0.6** (OpenWrt 22.03.4). Check with the command
+  below; it should print `widget SDK version 0.6.0`. The Deck shows its IP when you swipe down on its
+  screen.
+
+  ```bash
+  ssh root@<deck-ip> "grep -m1 -o 'widget SDK version [0-9.]*' /var/log/bmc/run-bmc-wasm-host-sdk-v0.log"
+  ```
+
+- Root SSH login to the Deck with a key. If you can log in with a password, set that up once with
+  `ssh-copy-id root@<deck-ip>`.
+- A **Dahua VTO** video doorbell on the same network, and a user name and password for its web
+  interface. Tested with a VTO2202F-P-S2; other VTOs use the same interface, though the event a
+  press sends can differ (see *Troubleshooting*).
+- To build the widget: a Mac or Linux computer with git, [Git LFS](https://git-lfs.com),
+  [Rust](https://rustup.rs) and python3. The pinned Rust version installs itself on the first build.
+  After installing, the computer is no longer needed.
+
+## Install
+
+```bash
+git lfs install
+git clone --recurse-submodules https://github.com/JaccoElektro/braiins-deck-doorbell.git
+cd braiins-deck-doorbell
+./install.sh <deck-ip>     # the doorbell service on the Deck
+./deploy.sh <deck-ip>      # builds and installs the widget
+```
+
+`install.sh` asks for your doorbell's address, user name and password, the Deck's own web password
+(if you set one) and the language. It checks that the Deck can reach the doorbell before it turns
+anything on.
+
+Then, in the Deck's web interface:
+
+1. Add a new full-screen scene with the **Doorbell** widget. Its settings need no changes.
+2. Switch that scene **off**, so it stays out of your rotation. The doorbell brings it up on its own.
+
+Try it without going to the door:
+
+```bash
+ssh root@<deck-ip> doorbell ring
+```
+
+Both scripts are safe to re-run, for example after a Deck firmware update removed what they
+installed. `install.sh` keeps your settings and asks before replacing the doorbell login.
+
+## Settings
+
+Everything lives in `/etc/config/doorbell` on the Deck. Change a setting with `uci`; it takes effect
+at the next ring:
+
+```bash
+ssh root@<deck-ip> 'uci set doorbell.main.volume=60; uci commit doorbell'
+```
+
+| Option       | Default         | What it does                                                                 |
+| ------------ | --------------- | ---------------------------------------------------------------------------- |
+| `volume`     | `70`            | Chime volume in percent, on the same scale as the Deck's own volume          |
+| `night`      | `soft`          | During the Deck's night mode: `normal`, `soft` (25 points quieter) or `off`  |
+| `repeats`    | `2`             | How many times it chimes                                                     |
+| `interval`   | `15`            | Seconds between chimes                                                       |
+| `led`        | `1`             | Blink the light strip (`1`) or not (`0`)                                     |
+| `led_color`  | `FFC800`        | Light strip colour, `RRGGBB`                                                 |
+| `lang`       | `en`            | `en` or `nl`: the text on screen and in notifications                        |
+| `name`       | `front door`    | Name of the door, shown under "Someone's at the door"                        |
+| `ntfy_url`   | —               | An [ntfy](https://ntfy.sh) topic URL, e.g. `https://ntfy.sh/<your-topic>`: a notification with a photo of the door |
+| `ping_url`   | —               | A URL of your own to call on every ring (`?name=…&at=…&lang=…`), e.g. a Home Assistant webhook |
+| `debug`      | `0`             | `1` logs every event the doorbell sends (`logread -e doorbell`)              |
+
+Pick a long, random ntfy topic name: anyone who knows it can read the notifications.
+
+## How it works
+
+```text
+                event stream (HTTPS, digest auth)
+ Dahua VTO ───────────────────────────────────▶ doorbell service ──▶ chime (madplay → speaker)
+     ▲                                            │      │
+     │ snapshot.cgi                               │      └──────────▶ scene on screen (Deck web API)
+     │                                            ▼                    + optional ntfy / your URL
+ doorbell-jpg / doorbell-status (CGI, Deck only) ◀── Doorbell widget ──▶ light strip blinks
+```
+
+- **`deck/doorbell`** (a shell script, run by procd so it restarts if it ever stops) keeps one
+  connection open to the VTO's event stream with `curl`. A press of the call button arrives as an
+  event; one ring is counted per 20 seconds, however many events the press sends.
+- **The chime** is a short two-tone bell (`deck/ding_dong.mp3`, made for this project) played with
+  the Deck's own `madplay`. Widgets on this firmware cannot play sound — the widget host is built
+  without audio — so the service does it.
+- **The screen**: the service finds the scene that holds the Doorbell widget through the Deck's own
+  web API (`deck/scene.lua` reads the scene list) and shows it with the same preview function the
+  web interface uses, for two minutes.
+- **The widget** reads the picture and the ring status from two small CGI scripts on the Deck's
+  local web server, which only the Deck itself can reach. It shows the overlay and blinks the light
+  strip. It is built on the Image widget from the Braiins Deck SDK.
+- **curl** is not part of the Deck's firmware. `install.sh` adds it from OpenWrt 22.03.4's official
+  packages — the release and CPU architecture the Deck's firmware is built on — and checks each
+  package's SHA-256 before installing it.
+- **Credentials** stay on the Deck, readable by root only: `/etc/doorbell/vto.conf` (the doorbell
+  login) and `/etc/doorbell/deck-password` (the Deck's web password, needed to switch screens). The
+  doorbell password is handed to `curl` through a file in RAM, never on a command line.
+
+## Troubleshooting
+
+- `ssh root@<deck-ip> doorbell status` shows the last ring and whether the service hears the
+  doorbell (`"events":{"ok":true,…}`).
+- `ssh root@<deck-ip> logread -e doorbell` shows what the service did.
+- **Pressing the button does nothing, but `doorbell ring` works:** your VTO may send a different
+  event. Turn on `debug`, press the button, and look for the event in `logread -e doorbell`. The
+  events the service reacts to are in `RING_RE` in `deck/doorbell`.
+- **No chime while music plays over AirPlay:** only one program can use the Deck's speaker at a
+  time.
+
+## Uninstall
+
+```bash
+./undeploy.sh <deck-ip>    # the widget
+./uninstall.sh <deck-ip>   # the service (curl stays installed)
+```
+
+Then delete the doorbell scene in the Deck's web interface.
+
+## What's on the Deck
+
+| Path                                   | What                                                        |
+| -------------------------------------- | ----------------------------------------------------------- |
+| `/usr/sbin/doorbell`                   | The service                                                 |
+| `/etc/init.d/doorbell`                 | Starts it at boot                                           |
+| `/etc/config/doorbell`                 | Settings                                                    |
+| `/etc/doorbell/`                       | Doorbell login and Deck password (root only)                |
+| `/usr/share/doorbell/`                 | The chime and the scene finder                              |
+| `/www/cgi-bin/doorbell-status`, `/www/cgi-bin/doorbell-jpg` | Status and picture for the widget, on the Deck only |
+| curl, libcurl4, libnghttp2-14          | From OpenWrt 22.03.4, installed with `opkg`                 |
+| `widget-doorbell` package              | The widget, added with the Deck's own package manager (`bmc-nix-cli`) |
+
+## Develop
+
+The widget is Rust compiled to WebAssembly, built against the Braiins Deck SDK in `bmc-sdk/`. That
+is a submodule of [BraiinsForge/bmc-main](https://github.com/BraiinsForge/bmc-main), pinned to the
+SDK 0.6 commit this was tested against.
+
+```bash
+cargo build -p doorbell --release --target wasm32-unknown-unknown
+```
+
+After changing the widget, bump `version` in both `doorbell/manifest.json` and
+`doorbell/Cargo.toml`, then run `./deploy.sh <deck-ip>`. After changing a file in `deck/`, run
+`./install.sh <deck-ip>` again.
+
+## License
+
+GPL-3.0-or-later; see [LICENSE](LICENSE). The widget is built with the Braiins Deck SDK and on its
+Image widget, which are GPL-3.0-or-later. curl and its libraries are downloaded from OpenWrt at
+install time, under their own licenses.
+
+This is an independent project, not made or endorsed by Braiins or Dahua.

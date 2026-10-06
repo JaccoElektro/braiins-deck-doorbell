@@ -1,0 +1,231 @@
+#!/bin/sh
+# doorbell — a Dahua video doorbell (VTO) on the Braiins Deck, no computer needed.
+#
+#   doorbell run      listen to the VTO (started by /etc/init.d/doorbell)
+#   doorbell ring     act as if someone rang (to test)
+#   doorbell chime    just the chime
+#   doorbell status   last ring, whether the listener is alive, LED and language (JSON)
+#
+# When someone rings: the chime from the Deck's own speaker (madplay), the
+# doorbell scene on screen (PreviewScene), and optionally a phone notification
+# with a photo (ntfy) or a ping to a URL of your own. Read-only towards the
+# VTO: it never opens the door or changes a setting.
+#
+# Settings: uci doorbell.main.* — see README. Secrets: /etc/doorbell/vto.conf
+# and /etc/doorbell/deck-password (both chmod 600).
+
+STATE=/tmp/doorbell
+SOUND=/usr/share/doorbell/ding_dong.mp3
+API=http://127.0.0.1
+WIDGET_UID=429a5e14-18f1-4564-8e9f-d196db251903
+mkdir -p "$STATE"
+
+cfg() { v=$(uci -q get "doorbell.main.$1"); echo "${v:-$2}"; }
+log() { logger -t doorbell "$*"; }
+nl() { [ "$(cfg lang en)" = nl ]; }
+
+# The VTO login as a curl config file (mode 600, in RAM), so the password is
+# never on a command line where `ps` would show it.
+vto_auth() {
+	. /etc/doorbell/vto.conf
+	umask 077
+	printf 'user = "%s"\n' "$(printf %s "$VTO_USER:$VTO_PASS" | sed 's/[\\"]/\\&/g')" > "$STATE/auth"
+}
+
+# ── Night mode: the Deck's own window ────────────────────────────────────
+
+is_night() {
+	j=$(tr -d '\n ' < /etc/bmc/config.json 2>/dev/null | grep -oE '"night_mode":\{[^}]*\}')
+	echo "$j" | grep -q '"enabled":true' || return 1
+	from=$(echo "$j" | sed -E 's/.*"from":"([0-9:]{5}).*/\1/')
+	to=$(echo "$j" | sed -E 's/.*"to":"([0-9:]{5}).*/\1/')
+	now=$(date +%H:%M)
+	if [ "$from" \> "$to" ]; then
+		[ ! "$now" \< "$from" ] || [ "$now" \< "$to" ]
+	else
+		[ ! "$now" \< "$from" ] && [ "$now" \< "$to" ]
+	fi
+}
+
+# ── Chime ────────────────────────────────────────────────────────────────
+
+# Volume in percent, on the Deck's own scale: madplay attenuation = pct * 0.4 - 40 dB.
+db_for() { echo $(( $1 * 2 / 5 - 40 )); }
+
+chime() {
+	gen=$(date +%s)$$
+	echo "$gen" > "$STATE/chime"
+	pct=$(cfg volume 70)
+	if is_night; then
+		case $(cfg night soft) in
+		off) log "night: no chime"; return ;;
+		soft) pct=$((pct - 25)); [ "$pct" -lt 10 ] && pct=10 ;;
+		esac
+	fi
+	db=$(db_for "$pct")
+	n=$(cfg repeats 2)
+	i=0
+	while [ "$i" -lt "$n" ]; do
+		[ "$(cat "$STATE/chime" 2>/dev/null)" = "$gen" ] || return  # a newer ring takes over
+		madplay -q "$SOUND" -A "$db" 2>/dev/null
+		i=$((i + 1))
+		[ "$i" -lt "$n" ] && sleep "$(cfg interval 15)"
+	done
+}
+
+# ── Deck web API (gRPC-web, one string field) ────────────────────────────
+
+o() { printf "\\$(printf %03o "$1")"; }
+msg() { printf '\000\000\000\000'; o $((${#1} + 2)); printf '\012'; o ${#1}; printf %s "$1"; }
+GRPC='-H Content-Type:application/grpc-web+proto -H X-Grpc-Web:1'
+
+login() {
+	rm -f "$STATE/token"
+	[ -s /etc/doorbell/deck-password ] || return 0  # a Deck without a password
+	msg "$(cat /etc/doorbell/deck-password)" > "$STATE/l.bin"
+	curl -s -o "$STATE/l.out" $GRPC --data-binary @"$STATE/l.bin" "$API/braiins.bmc.web.AuthenticationService/Login"
+	len=$(dd if="$STATE/l.out" bs=1 skip=6 count=1 2>/dev/null | hexdump -e '1/1 "%u"')
+	[ -n "$len" ] && dd if="$STATE/l.out" bs=1 skip=7 count="$len" 2>/dev/null > "$STATE/token"
+	rm -f "$STATE/l.bin" "$STATE/l.out"
+}
+
+# api <method path> <body file> [max seconds] -> body on stdout; retries once after a fresh login
+api() {
+	for try in 1 2; do
+		[ -f "$STATE/token" ] || login
+		curl -s -N --max-time "${3:-10}" -H "Cookie: session_id=$(cat "$STATE/token" 2>/dev/null)" \
+			-D "$STATE/h" $GRPC --data-binary @"$2" "$API/braiins.bmc.web.$1"
+		grep -qi 'grpc-status: 16' "$STATE/h" 2>/dev/null || break
+		rm -f "$STATE/token"
+	done
+	rm -f "$STATE/h"
+}
+
+# The scene that holds this widget; found once, then remembered.
+scene_id() {
+	s=$(cfg scene)
+	[ -n "$s" ] && { echo "$s"; return; }
+	printf '\000\000\000\000\000' > "$STATE/e.bin"
+	s=$(api SceneManagementService/GetScenes "$STATE/e.bin" | lua /usr/share/doorbell/scene.lua "$WIDGET_UID")
+	rm -f "$STATE/e.bin"
+	[ -n "$s" ] && uci set doorbell.main.scene="$s" && uci commit doorbell
+	echo "$s"
+}
+
+show() {
+	scene=$(scene_id)
+	if [ -z "$scene" ]; then
+		log "no scene with the Doorbell widget; add it to a scene (see README)"
+		return
+	fi
+	# Optional: a service of your own that owns the Deck's single preview slot.
+	menu=$(cfg menu_url)
+	if [ -n "$menu" ] && curl -s --max-time 2 "$menu/open?id=$scene&s=120" | grep -q '"ok": *true'; then
+		return
+	fi
+	msg "$scene" > "$STATE/p.bin"
+	api SceneManagementService/PreviewScene "$STATE/p.bin" 120 > /dev/null
+	rm -f "$STATE/p.bin"
+	# The scene was deleted or replaced: look it up again next time.
+	[ "$(cfg scene)" = "$scene" ] && ! scene_still_there "$scene" && uci -q delete doorbell.main.scene && uci commit doorbell
+}
+
+scene_still_there() {
+	printf '\000\000\000\000\000' > "$STATE/e.bin"
+	api SceneManagementService/GetScenes "$STATE/e.bin" | grep -q "$1"
+	r=$?; rm -f "$STATE/e.bin"; return $r
+}
+
+# ── Notifications (optional) ─────────────────────────────────────────────
+
+notify() { # $1 name, $2 unix time
+	text="Someone's at the door"; nl && text="Er wordt aangebeld"
+	url=$(cfg ntfy_url)
+	if [ -n "$url" ]; then
+		/www/cgi-bin/doorbell-jpg > /dev/null 2>&1  # a fresh picture
+		if [ -s "$STATE/snap.jpg" ]; then
+			curl -s --max-time 20 -o /dev/null -T "$STATE/snap.jpg" -H "Filename: doorbell.jpg" \
+				-H "Title: $text" -H "Tags: bell" -H "Message: $1, $(date +%H:%M)" "$url"
+		else
+			curl -s --max-time 20 -o /dev/null -H "Title: $text" -H "Tags: bell" -d "$1 · $(date +%H:%M)" "$url"
+		fi
+	fi
+	ping=$(cfg ping_url)
+	[ -n "$ping" ] && curl -s --max-time 4 -o /dev/null \
+		"$ping?name=$(echo "$1" | sed 's/ /%20/g')&at=$2&lang=$(cfg lang en)"
+}
+
+# ── A ring ───────────────────────────────────────────────────────────────
+
+bellname() {
+	n=$(cfg name)
+	[ -n "$n" ] && { echo "$n"; return; }
+	nl && echo voordeur || echo "front door"
+}
+
+ring() {
+	name=$(bellname)
+	now=$(date +%s)
+	last=$(cat "$STATE/last" 2>/dev/null || echo 0)
+	[ $((now - last)) -lt 20 ] && return  # one ring, not one per event line
+	echo "$now" > "$STATE/last"
+	printf '{"last_ring":{"name":"%s","at":%s,"time":"%s"}}\n' "$name" "$now" "$(date +%H:%M)" > "$STATE/ring.json"
+	log "ring: $name"
+	chime &
+	show &
+	notify "$name" "$now" &
+}
+
+status() {
+	ring=$(cat "$STATE/ring.json" 2>/dev/null || echo '{"last_ring":{"name":null,"at":0,"time":""}}')
+	alive=$(cat "$STATE/alive" 2>/dev/null || echo 0)
+	age=$(($(date +%s) - alive))
+	ok=false; [ "$age" -lt 200 ] && ok=true
+	led=true; [ "$(cfg led 1)" = 0 ] && led=false
+	extra=",\"events\":{\"ok\":$ok,\"age_s\":$age},\"led\":{\"on\":$led,\"color\":\"$(cfg led_color FFC800)\"},\"lang\":\"$(cfg lang en)\""
+	echo "$ring" | sed -E "s/\}\s*$/$extra}/"
+}
+
+# ── Listening ────────────────────────────────────────────────────────────
+
+# What a press of the call button looks like on Dahua VTOs (models differ;
+# a VTO2202F-P-S2 sends CallNoAnswered/Start, then Invite/Pulse).
+RING_RE='^Code=(CallNoAnswered|Invite|_DoTalkAction_|PhoneCallDetect);action=(Start|Pulse)'
+
+run() {
+	. /etc/doorbell/vto.conf
+	url="${VTO_SCHEME:-https}://$VTO_HOST/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"
+	fifo=$STATE/events
+	# No pipeline: its far side would be a subshell that outlives a stop.
+	# curl writes to a FIFO and this shell reads it, so stopping the service
+	# (SIGTERM to this process) can take curl down with it.
+	curl_pid=
+	trap '[ -n "$curl_pid" ] && kill "$curl_pid" 2>/dev/null; rm -f "$fifo"; exit 0' TERM INT
+	while true; do
+		log "listening to $VTO_HOST"
+		rm -f "$fifo"; mkfifo "$fifo"
+		# A heartbeat every 5-30 s plus other events: 3 minutes of silence is a dead connection.
+		vto_auth
+		curl -skN --digest -K "$STATE/auth" --connect-timeout 10 --speed-limit 1 --speed-time 180 "$url" > "$fifo" 2>/dev/null &
+		curl_pid=$!
+		while IFS= read -r line; do
+			date +%s > "$STATE/alive"
+			line=$(echo "$line" | tr -d '\r')
+			[ "$(cfg debug 0)" = 1 ] && case "$line" in Code=*) log "event: $line" ;; esac
+			echo "$line" | grep -qE "$RING_RE" && ring
+		done < "$fifo"
+		wait "$curl_pid" 2>/dev/null
+		curl_pid=
+		log "lost the VTO; trying again in 5 s"
+		sleep 5
+	done
+}
+
+case "$1" in
+run) run ;;
+ring) rm -f "$STATE/last"; ring ;;
+chime) chime ;;
+auth) vto_auth ;;
+status) status ;;
+*) echo "usage: doorbell run|ring|chime|status" >&2; exit 1 ;;
+esac
