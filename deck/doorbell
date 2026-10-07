@@ -144,7 +144,12 @@ scene_still_there() {
 
 # ── Notifications (optional) ─────────────────────────────────────────────
 
+# Demo mode (`demo` = 1), for filming the Deck: the picture is a demo image
+# and no notification goes out, so a video shows nothing of your street.
+demo() { [ "$(cfg demo 0)" = 1 ]; }
+
 notify() { # $1 name, $2 unix time
+	demo && { log "demo: no notification"; return; }
 	text="Someone's at the door"; nl && text="Er wordt aangebeld"
 	url=$(cfg ntfy_url)
 	if [ -n "$url" ]; then
@@ -196,6 +201,7 @@ unlock() {
 }
 
 notify_unlock() { # $1 unix time
+	demo && return
 	text="Door unlocked from the Deck"; nl && text="Deur geopend vanaf de Deck"
 	url=$(cfg ntfy_url)
 	[ -n "$url" ] && curl -s --max-time 20 -o /dev/null -H "Title: $text" -H "Tags: unlock" \
@@ -233,7 +239,8 @@ status() {
 	ok=false; [ "$age" -lt 200 ] && ok=true
 	led=true; [ "$(cfg led 1)" = 0 ] && led=false
 	un=false; [ "$(cfg unlock 0)" = 1 ] && un=true
-	extra=",\"events\":{\"ok\":$ok,\"age_s\":$age},\"led\":{\"on\":$led,\"color\":\"$(cfg led_color FFC800)\"},\"lang\":\"$(cfg lang en)\",\"unlock\":$un"
+	dm=false; demo && dm=true
+	extra=",\"events\":{\"ok\":$ok,\"age_s\":$age},\"led\":{\"on\":$led,\"color\":\"$(cfg led_color FFC800)\"},\"lang\":\"$(cfg lang en)\",\"unlock\":$un,\"demo\":$dm"
 	echo "$ring" | sed -E "s/\}\s*$/$extra}/"
 }
 
