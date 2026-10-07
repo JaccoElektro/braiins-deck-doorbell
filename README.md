@@ -218,7 +218,8 @@ cd braiins-deck-doorbell
 After changing the widget, bump `version` in both `doorbell/manifest.json` and
 `doorbell/Cargo.toml`, run `./package.sh` (or `./deploy.sh`) and commit `prebuilt/` too — that is
 what people without a build setup install. The package is reproducible: the same source gives the
-same file, so `prebuilt/SHA256SUMS` can be checked against a build of your own.
+same file. `./check.sh` checks that the versions agree; `./check.sh --build` rebuilds the package
+and checks it comes out identical to the one in `prebuilt/`.
 
 After changing a file in `deck/`, run `./install.sh <deck-ip>` again.
 
