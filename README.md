@@ -102,6 +102,10 @@ bottom right corner ("Unlock" / "Ontgrendelen"). Tap it once and it asks you to 
 tap within four seconds opens the door, through the same lock relay the doorbell's own app uses
 (`accessControl.cgi?action=openDoor`). How long the lock stays open is set in the doorbell itself.
 
+This only opens a door if an electric lock or door strike is wired to the doorbell's lock relay — if
+the *open* button in the doorbell's own app does nothing, this button won't either. Tested on a
+VTO2202F-P-S2: it accepts the command and switches its relay.
+
 ```bash
 ssh root@<deck-ip> 'uci set doorbell.main.unlock=1; uci commit doorbell'
 ```

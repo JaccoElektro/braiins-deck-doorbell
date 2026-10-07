@@ -176,14 +176,20 @@ unlock() {
 	echo "$now" > "$STATE/unlocked"
 	. /etc/doorbell/vto.conf
 	vto_auth
-	code=$(curl -sk --digest -K "$STATE/auth" --max-time 8 -o "$STATE/u.out" -w '%{http_code}' \
-		"${VTO_SCHEME:-https}://$VTO_HOST/cgi-bin/accessControl.cgi?action=openDoor&channel=$(cfg door 1)&UserID=101&Type=Remote")
+	url="${VTO_SCHEME:-https}://$VTO_HOST/cgi-bin/accessControl.cgi?action=openDoor&channel=$(cfg door 1)&UserID=101&Type=Remote"
+	# One retry: the VTO now and then drops a request, or refuses one that
+	# comes right after an earlier opening.
+	for try in 1 2; do
+		code=$(curl -sk --digest -K "$STATE/auth" --max-time 8 -o "$STATE/u.out" -w '%{http_code}' "$url")
+		[ "$code" = 200 ] && grep -q OK "$STATE/u.out" && break
+		[ "$try" = 1 ] && sleep 3
+	done
 	if [ "$code" = 200 ] && grep -q OK "$STATE/u.out"; then
 		log "door unlocked from the Deck"
 		echo '{"ok":true}'
 		notify_unlock "$now" &
 	else
-		log "unlock failed (HTTP $code)"
+		log "unlock failed (HTTP $code: $(head -c 80 "$STATE/u.out" 2>/dev/null | tr -d '\r\n'))"
 		echo '{"ok":false,"error":"vto"}'
 	fi
 	rm -f "$STATE/u.out"
