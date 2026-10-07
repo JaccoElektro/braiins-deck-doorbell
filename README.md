@@ -91,23 +91,9 @@ ssh root@<deck-ip> 'uci set doorbell.main.volume=60; uci commit doorbell'
 | `ping_url`   | —               | A URL of your own to call on every ring (`?name=…&at=…&lang=…`), e.g. a Home Assistant webhook |
 | `unlock`     | `0`             | `1` shows the button that opens the door (see *Opening the door*)            |
 | `door`       | `1`             | Which of the doorbell's lock relays the button opens                         |
-| `demo`       | `0`             | `1`: demo mode for filming the Deck (see below)                              |
 | `debug`      | `0`             | `1` logs every event the doorbell sends (`logread -e doorbell`)              |
 
 Pick a long, random ntfy topic name: anyone who knows it can read the notifications.
-
-### Demo mode
-
-Want to film your Deck to show what it does, without showing your street? Switch on demo mode:
-the doorbell screen then shows a demo picture instead of the camera, and no notification goes out.
-The chime, the light strip, the overlay and the unlock button work as usual.
-
-```bash
-ssh root@<deck-ip> 'uci set doorbell.main.demo=1; uci commit doorbell'   # and =0 when done
-```
-
-The demo picture is a drawn front door (`deck/demo.jpg`). To use your own, copy a JPEG to
-`/etc/doorbell/demo.jpg` on the Deck.
 
 ## Opening the door
 
@@ -195,7 +181,7 @@ Then delete the doorbell scene in the Deck's web interface.
 | `/etc/init.d/doorbell`                 | Starts it at boot                                           |
 | `/etc/config/doorbell`                 | Settings                                                    |
 | `/etc/doorbell/`                       | Doorbell login and Deck password (root only)                |
-| `/usr/share/doorbell/`                 | The chime, the scene finder and the demo picture            |
+| `/usr/share/doorbell/`                 | The chime and the scene finder                              |
 | `/www/cgi-bin/doorbell-status`, `/www/cgi-bin/doorbell-jpg` | Status and picture for the widget, on the Deck only |
 | `/www/cgi-bin/doorbell-unlock`         | Opens the door for the widget's button (POST, on the Deck only, refused unless `unlock` is on) |
 | curl, libcurl4, libnghttp2-14          | From OpenWrt 22.03.4, installed with `opkg`                 |
