@@ -23,36 +23,34 @@ no computer or home server needed.
 
 ## What you need
 
-- A Braiins Deck whose firmware runs **widget SDK 0.6** (OpenWrt 22.03.4). Check with the command
-  below; it should print `widget SDK version 0.6.0`. The Deck shows its IP when you swipe down on its
-  screen.
-
-  ```bash
-  ssh root@<deck-ip> "grep -m1 -o 'widget SDK version [0-9.]*' /var/log/bmc/run-bmc-wasm-host-sdk-v0.log"
-  ```
-
-- Root SSH login to the Deck with a key. If you can log in with a password, set that up once with
-  `ssh-copy-id root@<deck-ip>`.
+- A **Braiins Deck** with root SSH login by key. If you can log in with a password, set up a key
+  once with `ssh-copy-id root@<deck-ip>`. The Deck shows its IP when you swipe down on its screen.
 - A **Dahua VTO** video doorbell on the same network, and a user name and password for its web
   interface. Tested with a VTO2202F-P-S2; other VTOs use the same interface, though the event a
   press sends can differ (see *Troubleshooting*).
-- To build the widget: a Mac or Linux computer with git, [Git LFS](https://git-lfs.com),
-  [Rust](https://rustup.rs) and python3. The pinned Rust version installs itself on the first build.
-  After installing, the computer is no longer needed.
+- A Mac or Linux computer with `ssh` and `python3`, just to run the installer. After installing,
+  the computer is no longer needed.
+
+Tested on Deck firmware 26.09 (OpenWrt 22.03.4, widget host SDK 0.6). To see yours:
+
+```bash
+ssh root@<deck-ip> "grep -m1 -o '(host [0-9][0-9.]*)' /var/log/bmc/run-bmc-wasm-host-sdk-v0.log"   # (host 0.6.0)
+```
 
 ## Install
 
+Download this repository — **Code → Download ZIP** on GitHub, or `git clone` — and run the installer
+from its folder:
+
 ```bash
-git lfs install
-git clone --recurse-submodules https://github.com/JaccoElektro/braiins-deck-doorbell.git
 cd braiins-deck-doorbell
-./install.sh <deck-ip>     # the doorbell service on the Deck
-./deploy.sh <deck-ip>      # builds and installs the widget
+./install.sh <deck-ip>
 ```
 
-`install.sh` asks for your doorbell's address, user name and password, the Deck's own web password
-(if you set one) and the language. It checks that the Deck can reach the doorbell before it turns
-anything on.
+It asks for your doorbell's address, user name and password, the Deck's own web password (if you
+set one) and the language. It checks that the Deck can reach the doorbell before it turns anything
+on, then installs the doorbell service and the widget. The widget comes ready-made in `prebuilt/`,
+so you don't need Rust or the SDK.
 
 Then, in the Deck's web interface:
 
@@ -65,8 +63,25 @@ Try it without going to the door:
 ssh root@<deck-ip> doorbell ring
 ```
 
-Both scripts are safe to re-run, for example after a Deck firmware update removed what they
-installed. `install.sh` keeps your settings and asks before replacing the doorbell login.
+`install.sh` is safe to re-run — after a Deck firmware update, for instance (see below). It keeps
+your settings and asks before replacing the doorbell login.
+
+### How a widget gets onto the Deck ("sideloading")
+
+The Deck runs widgets from its own package manager, a small Nix store. Braiins' widgets arrive with
+firmware updates; your own you add yourself over SSH, which is what `install.sh` does for this
+widget:
+
+1. copy the packaged widget (`prebuilt/doorbell-widget-<version>.tar.gz`) to the Deck;
+2. add it to the Deck's store: `nix-store --add /tmp/bmc-widget-doorbell`;
+3. register it: `bmc-nix-cli add-packages --name widget-doorbell --version <version> --store-path <path>`.
+
+From then on, **Doorbell** is in the widget list of the Deck's web interface like any other widget.
+The same three steps work for any widget built with the
+[Braiins Deck SDK](https://github.com/BraiinsForge/bmc-main) and packaged the same way (see
+`package.sh`).
+
+A firmware update can remove what you added. Run `./install.sh <deck-ip>` again afterwards.
 
 ## Settings
 
@@ -167,8 +182,7 @@ stands somewhere others can reach it.
 ## Uninstall
 
 ```bash
-./undeploy.sh <deck-ip>    # the widget
-./uninstall.sh <deck-ip>   # the service (curl stays installed)
+./uninstall.sh <deck-ip>   # the widget and the service (curl stays installed)
 ```
 
 Then delete the doorbell scene in the Deck's web interface.
@@ -189,17 +203,24 @@ Then delete the doorbell scene in the Deck's web interface.
 
 ## Develop
 
-The widget is Rust compiled to WebAssembly, built against the Braiins Deck SDK in `bmc-sdk/`. That
-is a submodule of [BraiinsForge/bmc-main](https://github.com/BraiinsForge/bmc-main), pinned to the
-SDK 0.6 commit this was tested against.
+The widget is Rust compiled to WebAssembly, built against the Braiins Deck SDK in `bmc-sdk/` — a
+submodule of [BraiinsForge/bmc-main](https://github.com/BraiinsForge/bmc-main), pinned to the commit
+this was tested against. Building needs git, [Git LFS](https://git-lfs.com),
+[Rust](https://rustup.rs) (the pinned version installs itself) and python3:
 
 ```bash
-cargo build -p doorbell --release --target wasm32-unknown-unknown
+git lfs install
+git clone --recurse-submodules https://github.com/JaccoElektro/braiins-deck-doorbell.git
+cd braiins-deck-doorbell
+./deploy.sh <deck-ip>      # build, package into prebuilt/ and install the widget
 ```
 
 After changing the widget, bump `version` in both `doorbell/manifest.json` and
-`doorbell/Cargo.toml`, then run `./deploy.sh <deck-ip>`. After changing a file in `deck/`, run
-`./install.sh <deck-ip>` again.
+`doorbell/Cargo.toml`, run `./package.sh` (or `./deploy.sh`) and commit `prebuilt/` too — that is
+what people without a build setup install. The package is reproducible: the same source gives the
+same file, so `prebuilt/SHA256SUMS` can be checked against a build of your own.
+
+After changing a file in `deck/`, run `./install.sh <deck-ip>` again.
 
 ## License
 

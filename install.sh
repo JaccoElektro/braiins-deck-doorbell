@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Install the doorbell service on a Braiins Deck. Safe to re-run: settings and
-# credentials you entered before are kept unless you choose to replace them.
+# Install the doorbell on a Braiins Deck: the service, and the widget from
+# prebuilt/ (no Rust or SDK needed). Safe to re-run: settings and credentials
+# you entered before are kept unless you choose to replace them.
 #
-# Usage: ./install.sh <deck-ip>
+# Usage: ./install.sh <deck-ip> [--widget-only]
 set -euo pipefail
 
-DECK_IP="${1:?usage: ./install.sh <deck-ip>}"
+DECK_IP="${1:?usage: ./install.sh <deck-ip> [--widget-only]}"
+WIDGET_ONLY=0; [ "${2:-}" = --widget-only ] && WIDGET_ONLY=1
 DECK="root@$DECK_IP"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # -n: these never read stdin, so piped answers reach the prompts below.
@@ -19,6 +21,40 @@ if ! "${SSH[@]}" true; then
 	echo "Cannot log in to $DECK; set up key login once with: ssh-copy-id $DECK" >&2
 	exit 1
 fi
+install_widget() {
+	pkg=$(ls "$HERE"/prebuilt/doorbell-widget-*.tar.gz 2>/dev/null | head -n 1)
+	if [ -z "$pkg" ]; then
+		echo "No widget package in prebuilt/; build one with ./package.sh" >&2
+		exit 1
+	fi
+	( cd "$HERE/prebuilt" && sha256 -c --quiet SHA256SUMS ) || { echo "prebuilt/ does not match its checksum" >&2; exit 1; }
+	version=$(basename "$pkg" .tar.gz); version=${version#doorbell-widget-}
+	installed=$("${SSH[@]}" "sed -n 's/.*\"version\": *\"\([^\"]*\)\".*/\1/p' /run/current-profile/lib/bmc-widgets/doorbell/manifest.json 2>/dev/null" || true)
+	if [ "$installed" = "$version" ] && [ "$WIDGET_ONLY" = 0 ]; then
+		echo "==> The Doorbell widget $version is already on the Deck"
+		return
+	fi
+	if ! "${SSH[@]}" test -x /run/current-profile/bin/bmc-wasm-thin-v0; then
+		echo "This Deck's firmware has no widget runtime v0 (bmc-wasm-thin-v0); the widget needs it." >&2
+		exit 1
+	fi
+	echo "==> Installing the Doorbell widget $version"
+	"${SSHIN[@]}" 'rm -rf /tmp/bmc-widget-doorbell && tar -xzf - -C /tmp' < "$pkg"
+	if ! "${SSH[@]}" "export PATH=/run/current-profile/bin:\$PATH
+		path=\$(nix-store --add /tmp/bmc-widget-doorbell 2>/dev/null) && rm -rf /tmp/bmc-widget-doorbell &&
+		/nix/var/nix/gcroots/profiles/bmc/current/bin/bmc-nix-cli add-packages --name widget-doorbell --version $version --store-path \$path >/dev/null 2>&1 &&
+		test -f /run/current-profile/lib/bmc-widgets/doorbell/manifest.json"; then
+		echo "Installing the widget on the Deck failed; see: ssh $DECK tail /var/log/bmc/bmc-nix-cli.log" >&2
+		exit 1
+	fi
+}
+
+if [ "$WIDGET_ONLY" = 1 ]; then
+	install_widget
+	echo "==> Done."
+	exit 0
+fi
+
 release=$("${SSH[@]}" '. /etc/openwrt_release; echo "$DISTRIB_RELEASE $DISTRIB_ARCH"')
 if [ "$release" != "22.03.4 arm_cortex-a7_neon-vfpv4" ]; then
 	echo "This Deck runs OpenWrt $release; the curl packages here are for 22.03.4 arm_cortex-a7_neon-vfpv4." >&2
@@ -77,7 +113,8 @@ case "$code" in
 esac
 
 "${SSH[@]}" '/etc/init.d/doorbell enable; /etc/init.d/doorbell restart' 2>/dev/null || true
-sleep 4
+install_widget
+sleep 2
 echo "==> Status: $("${SSH[@]}" /usr/sbin/doorbell status)"
-echo "==> Done. Next: ./deploy.sh $DECK_IP to install the widget, then add \"Doorbell\" to a scene"
+echo "==> Done. In the Deck's web interface, add the \"Doorbell\" widget to a new full-screen scene"
 echo "    and switch that scene off. Test with: ssh $DECK doorbell ring"
